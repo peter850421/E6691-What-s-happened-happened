@@ -1,4 +1,4 @@
-## CFR-ICL: Cascade-Forward Refinement with Iterative Click Loss for Interactive Image Segmentation
+## [CFR-ICL: Cascade-Forward Refinement with Iterative Click Loss for Interactive Image Segmentation](https://arxiv.org/abs/2303.05620v1)
 
 <p align="center">
   <img src="./assets/img/flowchart.png" alt="drawing", width="650"/>
