@@ -68,5 +68,18 @@ python train.py models/plainvit_huge448_cocolvis.py \
     --ngpus=4
 ```
 
+## Citation
+
+```
+@article{sun2023cfricl,
+      title={CFR-ICL: Cascade-Forward Refinement with Iterative Click Loss for Interactive Image Segmentation}, 
+      author={Shoukun Sun and Min Xian and Fei Xu and Tiankai Yao and Luca Capriotti},
+      year={2023},
+      eprint={2303.05620},
+      archivePrefix={arXiv},
+      primaryClass={cs.CV}
+}
+```
+
 ## Acknowledgement
 Our project is developed based on [RITM](https://github.com/SamsungLabs/ritm_interactive_segmentation) and [SimpleClick](https://github.com/uncbiag/SimpleClick)
