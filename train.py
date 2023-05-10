@@ -34,7 +34,7 @@ def parse_args():
                         help='Here you can specify the name of the experiment. '
                              'It will be added as a suffix to the experiment folder.')
 
-    parser.add_argument('--workers', type=int, default=4,
+    parser.add_argument('--workers', type=int, default=12,
                         metavar='N', help='Dataloader threads.')
 
     parser.add_argument('--batch-size', type=int, default=-1,
@@ -55,7 +55,7 @@ def parse_args():
                         help='The prefix of the name of the experiment to be continued. '
                              'If you use this field, you must specify the "--resume-prefix" argument.')
 
-    parser.add_argument('--resume-prefix', type=str, default='latest',
+    parser.add_argument('--resume-prefix', type=str, default='last_checkpoint',
                         help='The prefix of the name of the checkpoint to be loaded.')
 
     parser.add_argument('--start-epoch', type=int, default=0,

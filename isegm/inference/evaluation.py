@@ -33,19 +33,23 @@ def evaluate_dataset(dataset, predictor, **kwargs):
 def evaluate_sample(image, gt_mask, predictor, max_iou_thr,
                     pred_thr=0.49, min_clicks=1, max_clicks=20,
                     sample_id=None, callback=None):
+
     clicker = Clicker(gt_mask=gt_mask)
     pred_mask = np.zeros_like(gt_mask)
     ious_list = []
 
     with torch.no_grad():
-        predictor.set_input_image(image)
+        predictor.set_input_image(image, gt_mask)
 
         for click_indx in range(max_clicks):
             clicker.make_next_click(pred_mask)
-            pred_probs = predictor.get_prediction(clicker)
+            pred_probs = predictor.get_prediction(clicker)#predictor.new_get_prediction(sample_id)#  # 
             pred_mask = pred_probs > pred_thr
 
             iou = utils.get_iou(gt_mask, pred_mask)
+
+            if sample_id == 8: #12
+                print('iou: ', iou)
             ious_list.append(iou)
 
             if iou >= max_iou_thr and click_indx + 1 >= min_clicks:

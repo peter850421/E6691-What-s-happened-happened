@@ -37,18 +37,30 @@ class ISModel(nn.Module):
 
         self.dist_maps = DistMaps(norm_radius=norm_radius, spatial_scale=1.0,
                                   cpu_mode=cpu_dist_maps, use_disks=use_disks)
+        # mt_layers = [
+        #         nn.Conv2d(in_channels=1, out_channels=16, kernel_size=1),
+        #         nn.LeakyReLU(negative_slope=0.2),
+        #         nn.Conv2d(in_channels=16, out_channels=12, kernel_size=1),
+        #         ScaleLayer(init_value=0.05, lr_mult=1)
+        #     ]
+        # self.order_embedding = nn.Sequential(*mt_layers)
+        self.order_embedding = nn.Embedding(50, 12)  # Embedding layer with 49 indices and 12-dimensional embedding
 
     def forward(self, image, points):
-        image, prev_mask = self.prepare_input(image)
+        image, prev_mask, order = self.prepare_input(image)
+        order = self.get_order_embedding(order)
+        
         coord_features = self.get_coord_features(image, prev_mask, points)
         coord_features = self.maps_transform(coord_features)
         if self.with_points:
             outputs = self.backbone_forward(image, coord_features, points)
         else:
-            outputs = self.backbone_forward(image, coord_features)
+            outputs = self.backbone_forward(image, coord_features, order)
 
-        outputs['instances'] = nn.functional.interpolate(outputs['instances'], size=image.size()[2:],
-                                                         mode='bilinear', align_corners=True)
+        # outputs['instances'] = nn.functional.interpolate(outputs['instances'], size=image.size()[2:],
+        #                                                  mode='bilinear', align_corners=True)
+        # outputs['order'] = nn.functional.interpolate(outputs['order'], size=image.size()[2:],
+        #                                                  mode='bilinear', align_corners=True)
         if self.with_aux_output:
             outputs['instances_aux'] = nn.functional.interpolate(outputs['instances_aux'], size=image.size()[2:],
                                                              mode='bilinear', align_corners=True)
@@ -58,11 +70,11 @@ class ISModel(nn.Module):
     def prepare_input(self, image):
         prev_mask = None
         if self.with_prev_mask:
-            prev_mask = image[:, 3:, :, :]
+            prev_mask = image[:, 3:4, :, :]
+            order = image[:, 4:5, :, :]
             image = image[:, :3, :, :]
-
         image = self.normalization(image)
-        return image, prev_mask
+        return image, prev_mask, order
 
     def backbone_forward(self, image, coord_features=None, points=None):
         raise NotImplementedError
@@ -71,8 +83,11 @@ class ISModel(nn.Module):
         coord_features = self.dist_maps(image, points)
         if prev_mask is not None:
             coord_features = torch.cat((prev_mask, coord_features), dim=1)
-
         return coord_features
+    
+    def get_order_embedding(self, order):
+        order = order.squeeze(1).long()  # Convert the tensor type to Long
+        return self.order_embedding(order).permute(0, 3, 1, 2)
 
 
 def split_points_by_order(tpoints: torch.Tensor, groups):
@@ -109,3 +124,4 @@ def split_points_by_order(tpoints: torch.Tensor, groups):
                     for x in group_points]
 
     return group_points
+

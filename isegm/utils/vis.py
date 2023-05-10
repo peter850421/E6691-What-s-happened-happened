@@ -60,6 +60,40 @@ def visualize_proposals(proposals_info, point_color=(255, 0, 0), point_radius=1)
 def draw_probmap(x):
     return cv2.applyColorMap((x * 255).astype(np.uint8), cv2.COLORMAP_HOT)
 
+import numpy as np
+
+def draw_ordermap(order, color_map=None):
+    """
+    Draw an RGB order map where each pixel is colored according to its order value.
+    
+    Args:
+        order (torch.Tensor): A tensor of shape (H, W) containing the order values for each pixel.
+        color_map (dict, optional): A dictionary mapping order values to unique RGB colors.
+        
+    Returns:
+        A numpy array of shape (H, W, 3) representing the order map.
+    """
+    # Convert order tensor to numpy array and initialize an empty RGB order map
+    order = order.numpy().astype(int)
+    h, w = order.shape
+    order_map = np.zeros((h, w, 3), dtype=np.uint8)
+    
+    # Automatically generate color_map if not provided
+    if color_map is None:
+        max_order = int(order.max().item()) + 1
+        np.random.seed(42)
+        color_map = {i: tuple(np.random.randint(15, 255, size=(3,)).astype(int)) for i in range(1, max_order + 1)}
+    
+    # Create a color map array for vectorized assignment
+    max_color_key = max(color_map.keys())
+    color_map_array = np.zeros((max_color_key + 1, 3), dtype=np.uint8)
+    for key, value in color_map.items():
+        color_map_array[key] = value
+
+    # Use advanced indexing to map order values to unique RGB colors
+    order_map = color_map_array[order]
+
+    return order_map
 
 def draw_points(image, points, color, radius=3):
     image = image.copy()

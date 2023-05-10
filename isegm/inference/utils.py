@@ -4,7 +4,7 @@ import torch
 import numpy as np
 
 from isegm.data.datasets import GrabCutDataset, BerkeleyDataset, DavisDataset, \
-    SBDEvaluationDataset, PascalVocDataset, BraTSDataset, ssTEMDataset, OAIZIBDataset, HARDDataset
+    SBDEvaluationDataset, PascalVocDataset, BraTSDataset, ssTEMDataset, OAIZIBDataset, HARDDataset, CocoLvisDataset
 from isegm.utils.serialization import load_model
 
 
@@ -21,7 +21,7 @@ def get_time_metrics(all_ious, elapsed_time):
 def load_is_model(checkpoint, device, eval_ritm, **kwargs):
     if isinstance(checkpoint, (str, Path)):
         state_dict = torch.load(checkpoint, map_location='cpu')
-        # print("Load pre-trained checkpoint from: %s" % checkpoint)
+        print("Load pre-trained checkpoint from: %s" % checkpoint)
     else:
         state_dict = checkpoint
 
@@ -60,7 +60,7 @@ def get_dataset(dataset_name, cfg):
     elif dataset_name == 'PascalVOC':
         dataset = PascalVocDataset(cfg.PASCALVOC_PATH, split='val')
     elif dataset_name == 'COCO_MVal':
-        dataset = DavisDataset(cfg.COCO_MVAL_PATH)
+        dataset = DavisDataset(cfg.COCO_MVAL_PATH) #CocoLvisDataset(cfg.LVIS_v1_PATH)#
     elif dataset_name == 'BraTS':
         dataset = BraTSDataset(cfg.BraTS_PATH)
     elif dataset_name == 'ssTEM':

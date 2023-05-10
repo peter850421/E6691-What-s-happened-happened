@@ -13,12 +13,15 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from isegm.utils.log import logger, TqdmToLogger, SummaryWriterAvg
-from isegm.utils.vis import draw_probmap, draw_points
+from isegm.utils.vis import draw_probmap, draw_points, draw_ordermap
 from isegm.utils.misc import save_checkpoint
 from isegm.utils.serialization import get_config_repr
 from isegm.utils.distributed import get_dp_wrapper, get_sampler, reduce_loss_dict
 from .optimizer import get_optimizer, get_optimizer_with_layerwise_decay
+from isegm.model.losses import FocalLoss
 
+import math
+from torchvision.utils import save_image
 
 class ISTrainer(object):
     def __init__(self, model, cfg, model_cfg, loss_cfg,
@@ -130,6 +133,14 @@ class ISTrainer(object):
                 click_model.eval()
 
         self.scaler: torch.cuda.amp.GradScaler
+        self.focal_loss = torch.hub.load(
+                            'adeelh/pytorch-multi-class-focal-loss',
+                            model='FocalLoss',
+                            alpha=None,
+                            gamma=2,
+                            reduction='mean',
+                            force_reload=False
+                        )
 
     def run(self, num_epochs, start_epoch=None, validation=True):
         if start_epoch is None:
@@ -145,6 +156,7 @@ class ISTrainer(object):
             self.training(epoch)
             if validation:
                 self.validation(epoch)
+            
 
     def training(self, epoch):
         if self.sw is None and self.is_master:
@@ -155,7 +167,7 @@ class ISTrainer(object):
             self.train_data.sampler.set_epoch(epoch)
 
         log_prefix = 'Train' + self.task_prefix.capitalize()
-        tbar = tqdm(self.train_data, file=self.tqdm_out, ncols=100)\
+        tbar = tqdm(self.train_data, file=self.tqdm_out, ncols=100, ascii=True, desc='level_1', position=0)\
             if self.is_master else self.train_data
 
         for metric in self.train_metrics:
@@ -165,9 +177,13 @@ class ISTrainer(object):
         train_loss = 0.0
         for i, batch_data in enumerate(tbar):
             global_step = epoch * len(self.train_data) + i
-
-            loss, losses_logging, splitted_batch_data, outputs = \
+            if self.cfg.amp:
+                with torch.cuda.amp.autocast():
+                    loss, losses_logging, splitted_batch_data, outputs = \
                 self.batch_forward(batch_data)
+            else:
+                loss, losses_logging, splitted_batch_data, outputs = \
+                    self.batch_forward(batch_data)
 
             accumulate_grad = ((i + 1) % self.cfg.accumulate_grad == 0) or \
                 (i + 1 == len(self.train_data))
@@ -207,7 +223,8 @@ class ISTrainer(object):
                                    value=self.lr if not hasattr(self, 'lr_scheduler') else self.lr_scheduler.get_lr()[-1],
                                    global_step=global_step)
 
-                tbar.set_description(f'Epoch {epoch}, training loss {train_loss/(i+1):.4f}')
+                tbar.set_description(f'Epoch {epoch}, training loss {train_loss/(i+1):.4f} {metric.get_epoch_value():.4f}')
+                
                 for metric in self.train_metrics:
                     metric.log_states(self.sw, f'{log_prefix}Metrics/{metric.name}', global_step)
 
@@ -217,8 +234,8 @@ class ISTrainer(object):
                                    value=metric.get_epoch_value(),
                                    global_step=epoch, disable_avg=True)
 
-            # save_checkpoint(self.net, self.cfg.CHECKPOINTS_PATH, prefix=self.task_prefix,
-            #                 epoch=None, multi_gpu=self.cfg.multi_gpu)
+            save_checkpoint(self.net, self.cfg.CHECKPOINTS_PATH, prefix=self.task_prefix,
+                            epoch=None, multi_gpu=self.cfg.multi_gpu)
 
             if isinstance(self.checkpoint_interval, (list, tuple)):
                 checkpoint_interval = [x for x in self.checkpoint_interval if x[0] <= epoch][-1][1]
@@ -260,7 +277,7 @@ class ISTrainer(object):
             val_loss += batch_losses_logging['overall'].item()
 
             if self.is_master:
-                tbar.set_description(f'Epoch {epoch}, validation loss: {val_loss/(i + 1):.4f}')
+                tbar.set_description(f'Epoch {epoch}, validation loss: {val_loss/(i + 1):.4f} {metric.get_epoch_value():.4f}')
                 for metric in self.val_metrics:
                     metric.log_states(self.sw, f'{log_prefix}Metrics/{metric.name}', global_step)
 
@@ -280,18 +297,81 @@ class ISTrainer(object):
         with torch.set_grad_enabled(not validation):
             batch_data = {k: v.to(self.device) for k, v in batch_data.items()}
             image, gt_mask, points = batch_data['images'], batch_data['instances'], batch_data['points']
-
+            # image = torch.load('/home/guavamin/CFR-ICL-Interactive-Segmentation/image.pt')
+            # gt_mask = torch.load('/home/guavamin/CFR-ICL-Interactive-Segmentation/gt_mask.pt')
+            # points = torch.load('/home/guavamin/CFR-ICL-Interactive-Segmentation/points.pt')
+            
+            # self.net.eval()
             prev_output = torch.zeros_like(image, dtype=torch.float32)[:, :1, :, :]
+            prev_order = torch.zeros_like(image, dtype=torch.float32)[:, :1, :, :]
             loss = 0.0
+            # Initialize the previous output list and points
+            prev_output_list = [prev_output]
+            prev_order_gt_list = [prev_order]
 
+            num_start = random.randint(0, 12)
             if not self.use_random_clicks:
                 points[:] = -1
+
                 points = get_next_points(prev_output,
                                          gt_mask,
                                          points)
+                # with torch.set_grad_enabled(validation):
+                
+                with torch.no_grad():
+                    # image = torch.load('/home/guavamin/CFR-ICL-Interactive-Segmentation/image.pt')
+                    # gt_mask = torch.load('/home/guavamin/CFR-ICL-Interactive-Segmentation/gt_mask.pt')
+                    # points = torch.load('/home/guavamin/CFR-ICL-Interactive-Segmentation/points.pt')
+                    # prev_output = torch.load('/home/guavamin/CFR-ICL-Interactive-Segmentation/prev_output.pt')
+                    # prev_order = torch.load('/home/guavamin/CFR-ICL-Interactive-Segmentation/prev_order.pt')
+                    for init_indx in range(num_start):
+                        
+                        # torch.save(image, 'image.pt')
+                        # torch.save(gt_mask, 'gt_mask.pt')
+                        # torch.save(points, 'points.pt')
+                        # torch.save(prev_output, 'prev_output.pt')
+                        # torch.save(prev_order, 'prev_order.pt')
+                        # exit()
+                        net_input = torch.cat((image, prev_output, prev_order), dim=1) \
+                        if self.net.with_prev_mask else image
+                        output = self._forward(self.net, net_input, points)
+                        prev_output = torch.sigmoid(output['instances'])
+                        # save_image(prev_output, 'output_train%d.png' % init_indx)
+                        # save_image(image, 'test.png')
+                        # save_image(gt_mask, 'mask.png')     
+                        # print(init_indx)
+                        
+                        
+                        #new order
+                        if len(prev_output_list) >= 1:
+                            prev_mask_output = prev_output_list[-1].clone()
+                            curr_mask_output = torch.sigmoid(output['instances'])
+                            curr_order_output = torch.tanh(output['order'])#output['order']#
+                            prev_order_gt = prev_order_gt_list[-1].clone()
+                            points_, points_order_ = torch.split(points.clone().view(-1, points.size(2)), [2, 1], dim=1)
+                            order_gt = self.order_of_pixel(prev_mask_output, curr_mask_output, prev_order_gt, now_order=torch.max(points_order_))
+                            order_embed_gt = order_gt #self.order_encoding_of_pixel(order_gt.clone(), embed_dim=1)
+                            prev_order = order_embed_gt
+                            prev_order_gt_list.append(order_gt)
+                            error_order_gt = self.mark_error_and_modify_order(batch_data['instances'], prev_mask_output, order_gt.clone().detach(), torch.max(points_order_))
+                            batch_data['order_GT'] = error_order_gt # order_gt
 
-            num_iters = random.randint(1, self.max_num_next_clicks)
-
+                        prev_output_list.append(torch.sigmoid(output['instances']))
+                        #new order
+                        if init_indx <= num_start - 1:
+                            points = get_next_points(prev_output,
+                                                    gt_mask,
+                                                    points)
+                    # exit()
+                    
+            num_iters =  self.max_num_next_clicks#random.randint(1, self.max_num_next_clicks)
+            # Define the triplet loss function
+            triplet_loss = torch.nn.TripletMarginLoss(margin=0.2)
+            mse_loss = torch.nn.MSELoss()
+            cosine_similarity = torch.nn.CosineSimilarity(dim=1)
+            cross_entropy_loss = torch.nn.CrossEntropyLoss()
+            
+            
             if self.use_iterloss:
                 # iterloss
                 for click_indx in range(num_iters):
@@ -300,7 +380,8 @@ class ISTrainer(object):
                     # net_input = torch.cat((image, prev_output), dim=1) \
                     #     if self.net.with_prev_mask else image
                     # v2
-                    net_input = torch.cat((image, prev_output.detach()), dim=1) \
+                    
+                    net_input = torch.cat((image, prev_output, prev_order), dim=1) \
                         if self.net.with_prev_mask else image
                     output = self._forward(self.net, net_input, points)
                     loss = self.add_loss(
@@ -314,7 +395,49 @@ class ISTrainer(object):
                         iterloss_step=click_indx,
                         iterloss_weight=self.iterloss_weights[click_indx])
 
+                    #new order
+                    if len(prev_output_list) >= 1:
+                        prev_mask_output = prev_output_list[-1].clone()
+                        curr_mask_output = torch.sigmoid(output['instances'])
+                        curr_order_output = torch.tanh(output['order']) #output['order']#
+                        prev_order_gt = prev_order_gt_list[-1].clone()
+                        points_, points_order_ = torch.split(points.clone().view(-1, points.size(2)), [2, 1], dim=1)
+                        order_gt = self.order_of_pixel(prev_mask_output, curr_mask_output, prev_order_gt, now_order=torch.max(points_order_))
+                        order_embed_gt = order_gt #self.order_encoding_of_pixel(order_gt.clone(), embed_dim=1) # for input use
+                        prev_order = order_embed_gt
+                        prev_order_gt_list.append(order_gt)
+                        
+                        error_order_gt = self.mark_error_and_modify_order(batch_data['instances'], prev_mask_output, order_gt.clone().detach(), torch.max(points_order_))
+                        
+                        batch_data['order_GT'] = error_order_gt # order_gt
+                        now_order_embed_gt =  error_order_gt.clone() #self.order_encoding_of_pixel(error_order_gt.clone(), embed_dim=1) # for output use
+                        now_order_embed_gt =  self.net.get_order_embedding(now_order_embed_gt)
+                        loss_order = - cosine_similarity(curr_order_output, now_order_embed_gt)
+
+                        n = torch.randint(1, 13, error_order_gt.shape, device=error_order_gt.device)
+                        if random.random() > 0.5:
+                            error_order_gt_negative = error_order_gt + n
+                            error_order_gt_negative = torch.clamp(error_order_gt_negative, min=0, max=48)
+                        else:
+                            tmp = (error_order_gt == 0)
+                            error_order_gt_negative = error_order_gt - n
+                            error_order_gt_negative = torch.clamp(error_order_gt_negative, min=0, max=48)
+                            error_order_gt_negative[tmp] =  random.randint(1, 13)
+
+                            
+                        now_order_embed_gt_negative =  error_order_gt_negative #self.order_encoding_of_pixel(error_order_gt_negative, embed_dim=1) # for output use
+                        now_order_embed_gt_negative =  self.net.get_order_embedding(now_order_embed_gt_negative)
+                        loss_order_negative = cosine_similarity(curr_order_output, now_order_embed_gt_negative)
+                        # loss_order = torch.sqrt(mse_loss(curr_order_output ,order_embed_gt)) #regression
+                        # loss_order = 0.01 * self.focal_loss(curr_order_output, error_order_gt.squeeze(1).long()) #classification
+                        # print('order', loss_order, loss_order.dtype)
+                        # print('loss', loss, loss.dtype)
+                        loss += 0.5 * (loss_order.mean() + loss_order_negative.mean())
+              
+                    
+                    #new order
                     prev_output = torch.sigmoid(output['instances'])
+                    prev_output_list.append(torch.sigmoid(output['instances']))
                     if click_indx < num_iters - 1:
                         points = get_next_points(prev_output,
                                                 gt_mask,
@@ -323,7 +446,15 @@ class ISTrainer(object):
                     if self.net.with_prev_mask and self.prev_mask_drop_prob > 0:
                         zero_mask = np.random.random(size=prev_output.size(0)) < self.prev_mask_drop_prob
                         prev_output[zero_mask] = torch.zeros_like(prev_output[zero_mask])
-
+                    # Compute the triplet loss between the feature vectors of the previous output list
+                    # if len(prev_output_list) >= 3:
+                    #     features_a = prev_output_list[-3]
+                    #     features_p = prev_output_list[-2]
+                    #     features_n = prev_output_list[-1]
+                    #     loss_triplet = triplet_loss(features_a, features_p, features_n)
+                    #     print(loss.dtype)
+                    #     # print(loss_triplet)
+                    #     loss +=  10 * loss_triplet
             else:
                 # iter mask (RITM)
                 points, prev_output = self.find_next_n_points(
@@ -360,6 +491,142 @@ class ISTrainer(object):
 
         batch_data['points'] = points
         return loss, losses_logging, batch_data, output
+    def mark_error_and_modify_order(self, groundtruth, output, order_of_pixel_, max_order):
+        # Convert groundtruth and output to binary tensors
+        groundtruth_binary = (groundtruth > 0).float()
+        output_binary = (output > 0.49).float()
+
+        # Compare groundtruth and output to find errors
+        errors = (groundtruth_binary != output_binary)
+
+        # Get the device of the tensors
+        device = groundtruth.device
+
+        # Modify the order of pixel for the pixels with errors
+        order_of_pixel_[errors] = max_order
+
+        return order_of_pixel_.to(device)
+
+    def order_of_pixel(self, prev_output, curr_output, prev_order_gt, now_order, threshold=0.49):
+        # Use threshold to generate the order of click of pixel ground truth.
+        # The pixel order should be in [0, 1, 2, 3, ...].
+        # There is a change in the pixel value crossing the threshold.
+        # If the curr_output < 0.49 but prev_output >= 0.49, we define the pixel as belonging to the now_order click.
+        # If prev_output < 0.49 and curr_output also < 0.49, we don't modify the value.
+        # If prev_output > 0.49 and curr_output > 0.49, we don't modify the value.
+        # If prev_output < 0.49 and curr_output > 0.49, we modify the value.
+        # only compare to the threshold
+        # Get the device of the outputs
+        device = prev_output.device
+
+        # Create the masks for the conditions
+        prev_mask = (prev_output >= threshold)
+        curr_mask = (curr_output < threshold)
+    
+        # Initialize the ground truth for pixel order
+        order_gt_ = prev_order_gt.clone()
+    
+        # Update the order ground truth map using vectorized operations
+        updated_pixels = (curr_mask & prev_mask) | (~curr_mask & ~prev_mask)
+        order_gt_[updated_pixels] = now_order
+    
+        return order_gt_.to(device)
+
+    def order_encoding_of_pixel(self, order_gt, max_order=49, embed_dim=1):
+        # Compute the position encoding
+        # Get the device of the outputs
+        device = order_gt.device
+        position = torch.arange(1, max_order+1, dtype=torch.float32, device=device).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, embed_dim, 2, dtype=torch.float32, device=device) * -(math.log(10000.0) / embed_dim))
+        pe = torch.zeros((int(max_order), embed_dim), device=device)
+
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        # Check if pe is empty
+        if pe.numel() == 0:
+            pe = torch.zeros((1, embed_dim), device=device)
+         #  Replace order_gt with the position encoding values
+        order_gt_flattened = order_gt.view(-1)  # Flatten order_gt
+        
+        pos_embedding = pe[order_gt_flattened.long()]  # Index into the position encoding array
+        pos_embedding = pos_embedding.view(*order_gt.shape, -1).squeeze(-1)  # Reshape pos_embedding to match order_gt with an extra dimension
+
+        return pos_embedding
+        
+    def decode_order(self, encoded_order, max_order=49, embed_dim=1):
+        encoded_order_size = encoded_order.size()
+        # Compute the position encoding
+        position = torch.arange(1, max_order+1, dtype=torch.float32).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, embed_dim, 2, dtype=torch.float32) * -(math.log(10000.0) / embed_dim))
+        pe = torch.zeros((int(max_order), embed_dim))
+
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+
+        # Compute the position encoding for the decoded order
+        decoded_pe = torch.zeros((max_order, embed_dim))
+        decoded_pe[:, 0::2] = torch.sin(position * div_term)
+        decoded_pe[:, 1::2] = torch.cos(position * div_term)
+
+        # Reshape the tensors to have the same number of columns
+        encoded_order = encoded_order.view(-1, embed_dim).float()
+        decoded_pe = decoded_pe.view(-1, embed_dim).float()
+
+        # Compute the distances between the encoded position embedding and the decoded position encoding
+        distances = torch.cdist(encoded_order, decoded_pe, p=2)
+
+        # Find the index of the minimum distance for each encoded pixel
+        _, min_indices = torch.min(distances, dim=1)
+
+        # Reshape the indices to match the shape of the input tensor
+        decoded_order = min_indices.view(encoded_order_size)
+
+        return decoded_order
+    def decode_order_similarity(self, encoded_order, max_order=49, embed_dim=1):
+        encoded_order_size = encoded_order.size()
+
+        # Compute the position encoding
+        position = torch.arange(0, max_order, dtype=torch.float32).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, embed_dim, 2, dtype=torch.float32) * -(math.log(10000.0) / embed_dim))
+        pe = torch.zeros((max_order, embed_dim))
+
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+
+        # Reshape the tensors to have the same number of columns
+        encoded_order = encoded_order.view(1, 12, 448, 448).float()
+        pe = position.view(max_order,1,1,1).float() #pe.view(max_order, 1, 1, 1).float()
+
+        # Apply convolution to position encoding
+        decoded_pe_embedding = self.net.get_order_embedding(pe.to(self.device)).cpu()
+
+        # Compute the dot product between the tensors x1 and x2
+        dot_product = torch.einsum('nchw,mchw->nmhw', decoded_pe_embedding, encoded_order)
+
+         # Compute the magnitudes of the tensors x1 and x2
+        x1_magnitude = torch.sqrt(torch.sum(decoded_pe_embedding ** 2, dim=1, keepdim=True))
+        x2_magnitude = torch.sqrt(torch.sum(encoded_order ** 2, dim=1, keepdim=True))
+
+        # Compute the cosine similarity
+        similarities = dot_product / torch.clamp(x1_magnitude * x2_magnitude, min=1e-8)
+
+        # Normalize the tensors along the embed_dim dimension for cosine similarity calculation
+        # encoded_order_norm = torch.nn.functional.normalize(encoded_order, p=2, dim=1)
+        # decoded_pe_embedding_norm = torch.nn.functional.normalize(decoded_pe_embedding, p=2, dim=1)
+
+        # Compute the similarity between the encoded order and the decoded order embeddings
+        # similarities = torch.einsum('nchw,mchw->nmhw', decoded_pe_embedding_norm, encoded_order_norm)
+        
+        # Find the index of the maximum similarity for each encoded pixel
+        _, max_indices = torch.max(similarities, dim=0)
+
+        # Reshape the indices to match the shape of the input tensor
+        decoded_order = max_indices.view(encoded_order_size[2:])
+
+        return decoded_order.unsqueeze(0)
+
+
+
 
     def find_next_n_points(self, image, gt_mask, points, prev_output,
                            num_points, eval_mode=False, grad=False):
@@ -439,12 +706,16 @@ class ISTrainer(object):
         images = splitted_batch_data['images']
         points = splitted_batch_data['points']
         instance_masks = splitted_batch_data['instances']
+        orders_GT = splitted_batch_data['order_GT'].detach().cpu()
+        orders = outputs['order'].detach().cpu()
+
 
         gt_instance_masks = instance_masks.cpu().numpy()
         predicted_instance_masks = torch.sigmoid(outputs['instances']).detach().cpu().numpy()
         points = points.detach().cpu().numpy()
 
-        image_blob, points = images[0], points[0]
+
+        image_blob, points, orders, orders_GT = images[0], points[0], orders[0:1], orders_GT[0:1]
         gt_mask = np.squeeze(gt_instance_masks[0], axis=0)
         predicted_mask = np.squeeze(predicted_instance_masks[0], axis=0)
 
@@ -458,6 +729,27 @@ class ISTrainer(object):
         gt_mask = draw_probmap(gt_mask)
         predicted_mask = draw_probmap(predicted_mask)
         viz_image = np.hstack((image_with_points, gt_mask, predicted_mask)).astype(np.uint8)
+
+        # Add the order image
+        # decoded_order = self.decode_order(orders) # regression
+        # decoded_order = torch.argmax(orders, dim=1) #segmentation
+        decoded_order = self.decode_order_similarity(orders)
+        order_colors = np.zeros((*decoded_order.shape, 3), dtype=np.uint8)
+        order_colors_GT = np.zeros((*decoded_order.shape, 3), dtype=np.uint8)
+
+        # for i in range(1, max_order + 1):
+        #     mask = (orders == i)[:, None, :, :]
+        #     mask_GT = (orders_GT == i)[:, None, :, :]
+        #     for c in range(3):
+        #         order_colors[..., c] = np.where(mask[..., 0], order_color_map[i][c], order_colors[..., c])
+        #         order_colors_GT[..., c] = np.where(mask_GT[..., 0], order_color_map[i][c], order_colors[..., c])
+
+        # print(decoded_order.shape) #1,1,448,448
+        order_image = draw_ordermap(decoded_order[0].squeeze())
+        order_GT_image = draw_ordermap(orders_GT[0].squeeze())
+        #order_image = cv2.resize(order_image, (viz_image.shape[1], viz_image.shape[0]))
+        # print(viz_image.shape, order_colors_GT[0][0].shape, order_colors[0][0].shape)
+        viz_image = np.hstack((viz_image, order_image, order_GT_image))
 
         _save_image('instance_segmentation', viz_image[:, :, ::-1])
 
@@ -484,7 +776,7 @@ class ISTrainer(object):
 
 def get_next_points(pred, gt, points, pred_thresh=0.49):
     pred = pred.detach().cpu().numpy()[:, 0, :, :]
-    gt = gt.cpu().numpy()[:, 0, :, :] > 0.5
+    gt = gt.cpu().numpy()[:, 0, :, :] > 0.49
 
     fn_mask = np.logical_and(gt, pred < pred_thresh)
     fp_mask = np.logical_and(np.logical_not(gt), pred > pred_thresh)
@@ -526,7 +818,7 @@ def get_next_points(pred, gt, points, pred_thresh=0.49):
 
 def get_iou(pred, gt, pred_thresh=0.49):
     pred_mask = pred > pred_thresh
-    gt_mask = gt > 0.5
+    gt_mask = gt > 0.49
 
     intersection = (pred_mask & gt_mask).sum()
     union = (pred_mask | gt_mask).sum()
