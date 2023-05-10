@@ -3,7 +3,7 @@ experiments
 pretrained_models/
 weights/
 datasets/
-
+*.gz
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
