@@ -1,7 +1,7 @@
 # E6691-What-s-happened-happened
 
 <p align="center">
-  <img src="./assets/img/flowchart.png" alt="drawing", width="650"/>
+  <img src="./assets/img/architecture.png" alt="drawing", width="650"/>
 </p>
 
 [![PWC](https://img.shields.io/endpoint.svg?url=https://paperswithcode.com/badge/cfr-icl-cascade-forward-refinement-with/interactive-segmentation-on-berkeley)](https://paperswithcode.com/sota/interactive-segmentation-on-berkeley?p=cfr-icl-cascade-forward-refinement-with)
