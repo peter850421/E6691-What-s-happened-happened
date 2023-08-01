@@ -252,9 +252,9 @@ class VisionTransformer(nn.Module):
         return x
 
     def forward_backbone(self, x, additional_features=None, shuffle=False):
-        x = self.patch_embed(x)
+        x = self.patch_embed(x) #BCHW -> BNC
         if additional_features is not None:
-            x += additional_features
+            x += additional_features 
 
         x = self.pos_drop(x + self.pos_embed[:, 1:])
         num_blocks = len(self.blocks)

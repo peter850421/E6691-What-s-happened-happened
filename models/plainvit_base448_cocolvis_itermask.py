@@ -2,7 +2,7 @@ from isegm.utils.exp_imports.default import *
 from isegm.model.modeling.transformer_helper.cross_entropy_loss import CrossEntropyLoss
 import numpy as np
 MODEL_NAME = 'cocolvis_plainvit_base448'
-
+# MODEL_NAME = 'cocolvis_plainvit_xtiny448'
 
 def main(cfg):
     model, model_cfg = init_model(cfg)
@@ -34,7 +34,7 @@ def init_model(cfg):
         in_channels=[128, 256, 512, 1024],
         in_index=[0, 1, 2, 3],
         dropout_ratio=0.1,
-        num_classes=1,
+        num_classes=12, #1,
         loss_decode=CrossEntropyLoss(),
         align_corners=False,
         upsample=cfg.upsample,
@@ -64,6 +64,54 @@ def init_model(cfg):
     )
 
     model.backbone.init_weights_from_pretrained(cfg.IMAGENET_PRETRAINED_MODELS.MAE_BASE)
+    # backbone_params = dict(
+    #     img_size=model_cfg.crop_size,
+    #     patch_size=(16,16),
+    #     in_chans=3,
+    #     embed_dim=160,
+    #     depth=8,
+    #     num_heads=4,
+    #     mlp_ratio=4, 
+    #     qkv_bias=True,
+    # )
+
+    # neck_params = dict(
+    #     in_dim = 160,
+    #     out_dims = [96, 192, 288, 384],
+    # )
+
+    # head_params = dict(
+    #     in_channels=[96, 192, 288, 384],
+    #     in_index=[0, 1, 2, 3],
+    #     dropout_ratio=0.1,
+    #     num_classes=12, #1,
+    #     loss_decode=CrossEntropyLoss(),
+    #     align_corners=False,
+    #     upsample=cfg.upsample,
+    #     channels={'x1':256, 'x2': 128, 'x4': 64}[cfg.upsample],
+    # )
+
+    # order_params = dict(
+    #     in_channels=[128, 256, 512, 1024],
+    #     in_index=[0, 1, 2, 3],
+    #     dropout_ratio=0.1,
+    #     num_classes=12,
+    #     loss_decode=CrossEntropyLoss(),
+    #     align_corners=False,
+    #     upsample=cfg.upsample,
+    #     channels={'x1':256, 'x2': 128, 'x4': 64}[cfg.upsample],
+    # )
+
+    # model = PlainVitModel(
+    #     use_disks=True,
+    #     norm_radius=5,
+    #     with_prev_mask=True,
+    #     backbone_params=backbone_params,
+    #     neck_params=neck_params,
+    #     head_params=head_params,
+    #     order_params=order_params,
+    #     random_split=cfg.random_split,
+    # )
     model.to(cfg.device)
 
     return model, model_cfg
@@ -75,13 +123,13 @@ def train(model, cfg, model_cfg):
     crop_size = model_cfg.crop_size
 
     loss_cfg = edict()
-    loss_cfg.instance_loss = NormalizedFocalLossSigmoid(alpha=0.5, gamma=2)
+    loss_cfg.instance_loss = NormalizedFocalLossSigmoid(alpha=0.5, gamma=2,) #Special    from_sigmoid=True
     loss_cfg.instance_loss_weight = 1.0
 
     train_augmentator = Compose([
         UniformRandomResize(scale_range=(0.75, 1.40)),
         HorizontalFlip(),
-        VerticalFlip(), #new
+        # VerticalFlip(), #new
         ShiftScaleRotate(), #new
         PadIfNeeded(min_height=crop_size[0], min_width=crop_size[1], border_mode=0),
         RandomCrop(*crop_size),
@@ -107,8 +155,8 @@ def train(model, cfg, model_cfg):
         points_sampler=points_sampler,
         epoch_len=30000,
         stuff_prob=0.30,
-        copy_paste_prob=0.5,
-        image_mix_prob=0.5
+        copy_paste_prob=0,#0.5,
+        image_mix_prob=0#0.5
     )
 
     valset = CocoLvisDataset(
@@ -121,7 +169,7 @@ def train(model, cfg, model_cfg):
     )
 
     optimizer_params = {
-        'lr': 5e-6, 'betas': (0.9, 0.999), 'eps': 1e-8,
+        'lr': 5e-5, 'betas': (0.9, 0.999), 'eps': 1e-8,
     }
 
     lr_scheduler = partial(torch.optim.lr_scheduler.MultiStepLR,

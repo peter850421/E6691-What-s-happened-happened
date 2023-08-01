@@ -77,7 +77,7 @@ class PlainVitModel(ISModel):
         self.patch_embed_coords = PatchEmbed(
             img_size= backbone_params['img_size'],
             patch_size=backbone_params['patch_size'], 
-            in_chans=15 if self.with_prev_mask else 2,  #3 [prev_mask(1), positive(1), ngative(1), pos/neg order(b, 2*6,448,448)]
+            in_chans=27 if self.with_prev_mask else 2,  #3 [prev_mask(1), positive(1), ngative(1), pos/neg order(b, 2*12,448,448)]
             embed_dim=backbone_params['embed_dim'],
         )
         self.patch_embed_order = PatchEmbed(
@@ -89,11 +89,18 @@ class PlainVitModel(ISModel):
         self.backbone = VisionTransformer(**backbone_params)
         self.neck = SimpleFPN(**neck_params)
         self.head = SwinTransfomerSegHead(**head_params)
-        self.order = SwinTransfomerSegHead(**order_params)
-        # self.guided_map_conv1 = nn.Conv2d(3, 16, 1)
-        # self.guided_map_relu1 = nn.ReLU(inplace=True)
-        # self.guided_map_conv2 = nn.Conv2d(16, 2, 1)
-        # self.guided_filter = GuidedFilter(4, 1e-2)
+        # self.order = SwinTransfomerSegHead(**order_params)
+        # self.guided_map_conv1 = nn.Conv2d(3, 13, 1)
+        # self.guided_map_gelu1 = nn.GELU()
+        # self.guided_map_conv2 = nn.Conv2d(13, 13, 1)
+        # self.guided_filter = GuidedFilter(12, 1e-1)
+        # mt_layers = [
+        #         nn.Conv2d(in_channels=3, out_channels=12, kernel_size=1),
+        #         nn.GroupNorm(1, 12),
+        #         nn.GELU(),
+        #         nn.Conv2d(12, 12, 1),
+        #             ]   
+        # self.instances_transform = nn.Sequential(*mt_layers)
 
     def backbone_forward(self, image, coord_features=None, order=None):
         coord_features = self.patch_embed_coords(coord_features)
@@ -108,17 +115,28 @@ class PlainVitModel(ISModel):
         backbone_features = backbone_features.transpose(-1,-2).view(B, C, grid_size[0], grid_size[1])
         multi_scale_features = self.neck(backbone_features)
         output = self.head(multi_scale_features)
-        order = self.order(multi_scale_features)
-        instances = nn.functional.interpolate(output, size=image.size()[2:],
+        output = nn.functional.interpolate(output, size=image.size()[2:],
                                                 mode='bilinear', align_corners=True)
-        order = nn.functional.interpolate(order, size=image.size()[2:],
-                                                mode='bilinear', align_corners=True)
-        # guided_image = self.guided_map_relu1(self.guided_map_conv1(image))
+
+        
+        # instances = output[:,0:1]
+        # order = output[:,1:13]
+
+        # # order = self.order(multi_scale_features)
+        # instances = nn.functional.interpolate(instances, size=image.size()[2:],
+        #                                         mode='bilinear', align_corners=True)
+        # order = nn.functional.interpolate(order, size=image.size()[2:],
+        #                                         mode='bilinear', align_corners=True)
+        # guided_image = self.guided_map_gelu1(self.guided_map_conv1(image))
         # guided_image = self.guided_map_conv2(guided_image)
+        # guided_image = self.instances_transform(image)
 
         # output = self.guided_filter(guided_image, output)
-        # instances =  output[:,0:1,:,:]
-        # order = output[:,1:2,:,:]
+        instances = None
+        order = output
+        # instances = self.instances_transform(order)
+        # instances = output[:,0:1]
+        # order = output[:,1:13]
 
         
         return {'instances': instances, 'order': order, 'instances_aux': None}

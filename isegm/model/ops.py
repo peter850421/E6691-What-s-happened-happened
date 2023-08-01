@@ -35,7 +35,7 @@ class BilinearConvTranspose2d(nn.ConvTranspose2d):
 
 
 class DistMaps(nn.Module):
-    def __init__(self, norm_radius, spatial_scale=1.0, cpu_mode=False, use_disks=False):
+    def __init__(self, order_embedding, norm_radius, spatial_scale=1.0, cpu_mode=False, use_disks=False):
         super(DistMaps, self).__init__()
         self.spatial_scale = spatial_scale
         self.norm_radius = norm_radius
@@ -44,7 +44,7 @@ class DistMaps(nn.Module):
         if self.cpu_mode:
             from isegm.utils.cython import get_dist_maps
             self._get_dist_maps = get_dist_maps
-        self.order_embedding = nn.Embedding(50, 6)  # Embedding layer with 49 indices and 12-dimensional embedding
+        self.order_embedding =  nn.Embedding(50, 12)  # Embedding layer with 49 indices and 12-dimensional embedding #order_embedding #
     def compute_pos_embedding(self, points_order, embed_dim=1):
         max_order = 49#torch.max(points_order) + 1
         position = torch.arange(1, max_order+1, dtype=torch.float32).unsqueeze(1)
@@ -158,7 +158,7 @@ class DistMaps(nn.Module):
         embedded_output = self.order_embedding(reshaped_input)
 
         # Reshape the embedded output back to (batch_size, channels * embedding_dim, height, width)
-        embedded_output = embedded_output.view(batch_size, channels * 6, height, width)
+        embedded_output = embedded_output.view(batch_size, channels * 12, height, width)
 
         return embedded_output
 

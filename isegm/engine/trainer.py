@@ -180,10 +180,10 @@ class ISTrainer(object):
             if self.cfg.amp:
                 with torch.cuda.amp.autocast():
                     loss, losses_logging, splitted_batch_data, outputs = \
-                self.batch_forward(batch_data)
+                self.batch_forward(batch_data, False, epoch)
             else:
                 loss, losses_logging, splitted_batch_data, outputs = \
-                    self.batch_forward(batch_data)
+                    self.batch_forward(batch_data, False, epoch)
 
             accumulate_grad = ((i + 1) % self.cfg.accumulate_grad == 0) or \
                 (i + 1 == len(self.train_data))
@@ -217,7 +217,7 @@ class ISTrainer(object):
                         v.log_states(self.sw, f'{log_prefix}Losses/{k}', global_step)
 
                 if self.image_dump_interval > 0 and global_step % self.image_dump_interval == 0:
-                    self.save_visualization(splitted_batch_data, outputs, global_step, prefix='train')
+                    self.save_visualization(splitted_batch_data, outputs, global_step, prefix='train', from_logist=True)
 
                 self.sw.add_scalar(tag=f'{log_prefix}States/learning_rate',
                                    value=self.lr if not hasattr(self, 'lr_scheduler') else self.lr_scheduler.get_lr()[-1],
@@ -267,7 +267,7 @@ class ISTrainer(object):
         for i, batch_data in enumerate(tbar):
             global_step = epoch * len(self.val_data) + i
             loss, batch_losses_logging, splitted_batch_data, outputs = \
-                self.batch_forward(batch_data, validation=True)
+                self.batch_forward(batch_data, validation=True, epoch=epoch)
 
             batch_losses_logging['overall'] = loss
             reduce_loss_dict(batch_losses_logging)
@@ -290,7 +290,7 @@ class ISTrainer(object):
                 self.sw.add_scalar(tag=f'{log_prefix}Metrics/{metric.name}', value=metric.get_epoch_value(),
                                    global_step=epoch, disable_avg=True)
 
-    def batch_forward(self, batch_data, validation=False):
+    def batch_forward(self, batch_data, validation=False, epoch=None):
         metrics = self.val_metrics if validation else self.train_metrics
         losses_logging = dict()
 
@@ -302,21 +302,26 @@ class ISTrainer(object):
             # points = torch.load('/home/guavamin/CFR-ICL-Interactive-Segmentation/points.pt')
             
             # self.net.eval()
-            prev_output = torch.zeros_like(image, dtype=torch.float32)[:, :1, :, :]
-            prev_order = torch.zeros_like(image, dtype=torch.float32)[:, :1, :, :]
+            
+            if random.random() > 0.5:
+                prev_output = torch.zeros_like(image, dtype=torch.float32)[:, :1, :, :]
+                prev_order = torch.zeros_like(image, dtype=torch.float32)[:, :1, :, :]
+            else:
+                prev_output = torch.ones_like(image, dtype=torch.float32)[:, :1, :, :]
+                prev_order = torch.ones_like(image, dtype=torch.float32)[:, :1, :, :]
             loss = 0.0
             # Initialize the previous output list and points
             prev_output_list = [prev_output]
             prev_order_gt_list = [prev_order]
 
-            num_start = random.randint(0, 12)
+            num_start = random.randint(1, 16)
             if not self.use_random_clicks:
                 points[:] = -1
 
                 points = get_next_points(prev_output,
                                          gt_mask,
                                          points)
-                # with torch.set_grad_enabled(validation):
+                # with torch.set_grad_enabled(not validation):
                 
                 with torch.no_grad():
                     # image = torch.load('/home/guavamin/CFR-ICL-Interactive-Segmentation/image.pt')
@@ -335,7 +340,7 @@ class ISTrainer(object):
                         net_input = torch.cat((image, prev_output, prev_order), dim=1) \
                         if self.net.with_prev_mask else image
                         output = self._forward(self.net, net_input, points)
-                        prev_output = torch.sigmoid(output['instances'])
+                        prev_output = torch.sigmoid(output['instances'])#output['instances']#
                         # save_image(prev_output, 'output_train%d.png' % init_indx)
                         # save_image(image, 'test.png')
                         # save_image(gt_mask, 'mask.png')     
@@ -345,18 +350,21 @@ class ISTrainer(object):
                         #new order
                         if len(prev_output_list) >= 1:
                             prev_mask_output = prev_output_list[-1].clone()
-                            curr_mask_output = torch.sigmoid(output['instances'])
-                            curr_order_output = torch.tanh(output['order'])#output['order']#
+                            curr_mask_output = torch.sigmoid(output['instances'])# output['instances']#
+                            curr_order_output = output['order']# torch.tanh(output['order'])#
                             prev_order_gt = prev_order_gt_list[-1].clone()
                             points_, points_order_ = torch.split(points.clone().view(-1, points.size(2)), [2, 1], dim=1)
                             order_gt = self.order_of_pixel(prev_mask_output, curr_mask_output, prev_order_gt, now_order=torch.max(points_order_))
                             order_embed_gt = order_gt #self.order_encoding_of_pixel(order_gt.clone(), embed_dim=1)
                             prev_order = order_embed_gt
                             prev_order_gt_list.append(order_gt)
-                            error_order_gt = self.mark_error_and_modify_order(batch_data['instances'], prev_mask_output, order_gt.clone().detach(), torch.max(points_order_))
+                            error_order_gt = self.mark_error_and_modify_order(batch_data['instances'], prev_mask_output, curr_mask_output, prev_order_gt, \
+                                                                              order_gt.clone().detach(), torch.max(points_order_))
+                            
                             batch_data['order_GT'] = error_order_gt # order_gt
 
                         prev_output_list.append(torch.sigmoid(output['instances']))
+                        # prev_output_list.append(output['instances'])
                         #new order
                         if init_indx <= num_start - 1:
                             points = get_next_points(prev_output,
@@ -364,7 +372,7 @@ class ISTrainer(object):
                                                     points)
                     # exit()
                     
-            num_iters =  self.max_num_next_clicks#random.randint(1, self.max_num_next_clicks)
+            num_iters =  self.max_num_next_clicks#min(epoch+2, self.max_num_next_clicks)#random.randint(1, self.max_num_next_clicks)
             # Define the triplet loss function
             triplet_loss = torch.nn.TripletMarginLoss(margin=0.2)
             mse_loss = torch.nn.MSELoss()
@@ -395,49 +403,70 @@ class ISTrainer(object):
                         iterloss_step=click_indx,
                         iterloss_weight=self.iterloss_weights[click_indx])
 
+                    #v3
+                    # loss += F.cross_entropy(output['instances'], batch_data['instances'])
+                    # loss += F.binary_cross_entropy_with_logits(output['instances'], batch_data['instances'])
+                    # loss += F.binary_cross_entropy_with_logits(torch.special.logit(output['instances'], eps=1e-9), batch_data['instances'])
+                    # loss += self.focal_loss(F.log_softmax(output['binary'], dim=1).double(), batch_data['instances'])
+                    # loss += mse_loss(output['instances'], batch_data['instances'])
+
                     #new order
                     if len(prev_output_list) >= 1:
                         prev_mask_output = prev_output_list[-1].clone()
-                        curr_mask_output = torch.sigmoid(output['instances'])
-                        curr_order_output = torch.tanh(output['order']) #output['order']#
+                        curr_mask_output = torch.sigmoid(output['instances'])# output['instances'] # #  #new
+                        curr_order_output = output['order']#  torch.tanh(output['order']) #
                         prev_order_gt = prev_order_gt_list[-1].clone()
                         points_, points_order_ = torch.split(points.clone().view(-1, points.size(2)), [2, 1], dim=1)
+
+                        # now_order = self.decode_order_similarity_batch(encoded_order=curr_order_output, max_order=20, embed_dim=1)
+                        # curr_mask_output = self.order_to_prediction(prev_output=prev_mask_output.detach(), now_order=now_order.clone().detach(), max_order=torch.max(points_order_).clone().detach())
+                        # output['instances'] = curr_mask_output
+
                         order_gt = self.order_of_pixel(prev_mask_output, curr_mask_output, prev_order_gt, now_order=torch.max(points_order_))
                         order_embed_gt = order_gt #self.order_encoding_of_pixel(order_gt.clone(), embed_dim=1) # for input use
                         prev_order = order_embed_gt
                         prev_order_gt_list.append(order_gt)
                         
-                        error_order_gt = self.mark_error_and_modify_order(batch_data['instances'], prev_mask_output, order_gt.clone().detach(), torch.max(points_order_))
+                        error_order_gt = self.mark_error_and_modify_order(batch_data['instances'], prev_mask_output, curr_mask_output, prev_order_gt, \
+                                                                              order_gt.clone().detach(), torch.max(points_order_))
                         
                         batch_data['order_GT'] = error_order_gt # order_gt
                         now_order_embed_gt =  error_order_gt.clone() #self.order_encoding_of_pixel(error_order_gt.clone(), embed_dim=1) # for output use
+                        # loss += self.net.calculate_cross_entropy(output['instances'], now_order_embed_gt)
+                        # positive_weight = self.compute_weights_3d(now_order_embed_gt).squeeze(1)
                         now_order_embed_gt =  self.net.get_order_embedding(now_order_embed_gt)
-                        loss_order = - cosine_similarity(curr_order_output, now_order_embed_gt)
+
+                        loss_order = torch.exp(1 - cosine_similarity(curr_order_output, now_order_embed_gt)) - 1
 
                         n = torch.randint(1, 13, error_order_gt.shape, device=error_order_gt.device)
                         if random.random() > 0.5:
                             error_order_gt_negative = error_order_gt + n
-                            error_order_gt_negative = torch.clamp(error_order_gt_negative, min=0, max=48)
+                            error_order_gt_negative = torch.clamp(error_order_gt_negative, min=0, max=20)
                         else:
                             tmp = (error_order_gt == 0)
                             error_order_gt_negative = error_order_gt - n
-                            error_order_gt_negative = torch.clamp(error_order_gt_negative, min=0, max=48)
+                            error_order_gt_negative = torch.clamp(error_order_gt_negative, min=0, max=20)
                             error_order_gt_negative[tmp] =  random.randint(1, 13)
 
                             
                         now_order_embed_gt_negative =  error_order_gt_negative #self.order_encoding_of_pixel(error_order_gt_negative, embed_dim=1) # for output use
+                        # negative_weight = self.compute_weights_3d(now_order_embed_gt_negative).squeeze(1)
                         now_order_embed_gt_negative =  self.net.get_order_embedding(now_order_embed_gt_negative)
-                        loss_order_negative = cosine_similarity(curr_order_output, now_order_embed_gt_negative)
+                        loss_order_negative = torch.clamp(torch.exp(cosine_similarity(curr_order_output, now_order_embed_gt_negative))-1, min=0)
+                        
                         # loss_order = torch.sqrt(mse_loss(curr_order_output ,order_embed_gt)) #regression
                         # loss_order = 0.01 * self.focal_loss(curr_order_output, error_order_gt.squeeze(1).long()) #classification
                         # print('order', loss_order, loss_order.dtype)
                         # print('loss', loss, loss.dtype)
-                        loss += 0.5 * (loss_order.mean() + loss_order_negative.mean())
-              
-                    
+                        # loss += 0.1 * (((loss_order*positive_weight).sum((1,2))).mean() + ((loss_order_negative*negative_weight).sum((1,2))).mean())
+                        loss += 0.5 * ((loss_order).mean() + loss_order_negative.mean())
+
                     #new order
                     prev_output = torch.sigmoid(output['instances'])
                     prev_output_list.append(torch.sigmoid(output['instances']))
+                    # prev_output = output['instances']
+                    # prev_output_list.append(prev_output)
+
                     if click_indx < num_iters - 1:
                         points = get_next_points(prev_output,
                                                 gt_mask,
@@ -491,46 +520,137 @@ class ISTrainer(object):
 
         batch_data['points'] = points
         return loss, losses_logging, batch_data, output
-    def mark_error_and_modify_order(self, groundtruth, output, order_of_pixel_, max_order):
-        # Convert groundtruth and output to binary tensors
-        groundtruth_binary = (groundtruth > 0).float()
-        output_binary = (output > 0.49).float()
 
-        # Compare groundtruth and output to find errors
-        errors = (groundtruth_binary != output_binary)
+
+
+    def order_to_prediction(self, prev_output, now_order, max_order):
+        prev_output = prev_output.bool()  # Convert prev_output to bool
+        indx = (now_order == max_order.to(now_order.device))  # Create a boolean mask
+        curr_output = prev_output.clone()  # Clone prev_output to create curr_output
+        curr_output[indx] = torch.logical_not(prev_output[indx])  # Apply logical_not only on specific index
+        return curr_output.float()  # Convert curr_output to float
+
+    def compute_weights_3d(self, now_order_embed_gt):
+        batch_size, _, width, height = now_order_embed_gt.shape
+        weights = torch.zeros_like(now_order_embed_gt)
+
+        for b in range(batch_size):
+            # Compute the histogram
+            histogram = torch.histc(now_order_embed_gt[b, 0].float(), 
+                                    bins=int(now_order_embed_gt[b, 0].max().item())+1, 
+                                    min=0, 
+                                    max=int(now_order_embed_gt[b, 0].max().item()))
+
+            # Avoid division by zero
+            histogram += 1e-10
+
+            # Compute the weights
+            weights_per_integer = 1.0 / histogram
+
+            # Create a weight map that assigns to each position the weight of the integer at that position
+            weights[b, 0] = weights_per_integer[now_order_embed_gt[b, 0].long()]
+
+        return weights
+
+
+
+    def mark_error_and_modify_order(self, groundtruth, prev_output, curr_output, prev_order_of_pixel_, order_of_pixel_, max_order):
+        # Convert groundtruth and output to binary tensors
+        groundtruth_binary = groundtruth.float()
+        prev_output_binary = (prev_output >= 0.5).float()
+        curr_output_binary = (curr_output >= 0.5).float()
 
         # Get the device of the tensors
         device = groundtruth.device
 
-        # Modify the order of pixel for the pixels with errors
-        order_of_pixel_[errors] = max_order
+        # Distinguish false positives and false negatives
+        prev_false_positives = (groundtruth_binary < prev_output_binary)
+        prev_false_negatives = (groundtruth_binary > prev_output_binary)
+        prev_true_positives_curr_false_negative = (groundtruth_binary == prev_output_binary) & (groundtruth_binary > curr_output_binary)
 
-        return order_of_pixel_.to(device)
+        # Clone the current pixel order to create a new tensor for the new order
+        new_order_of_pixel_ = order_of_pixel_.clone()
 
-    def order_of_pixel(self, prev_output, curr_output, prev_order_gt, now_order, threshold=0.49):
-        # Use threshold to generate the order of click of pixel ground truth.
-        # The pixel order should be in [0, 1, 2, 3, ...].
-        # There is a change in the pixel value crossing the threshold.
-        # If the curr_output < 0.49 but prev_output >= 0.49, we define the pixel as belonging to the now_order click.
-        # If prev_output < 0.49 and curr_output also < 0.49, we don't modify the value.
-        # If prev_output > 0.49 and curr_output > 0.49, we don't modify the value.
-        # If prev_output < 0.49 and curr_output > 0.49, we modify the value.
-        # only compare to the threshold
+        # Modify the new order tensor
+        new_order_of_pixel_[groundtruth_binary < 1] = 0
+        new_order_of_pixel_[prev_false_negatives] = max_order
+
+        # Here is the modification: assign the value from the previous order of pixel 
+        # to the locations where the previous output was true positive and the current output is false negative
+        new_order_of_pixel_[prev_true_positives_curr_false_negative] = prev_order_of_pixel_[prev_true_positives_curr_false_negative]
+
+        return new_order_of_pixel_.to(device)
+
+
+    # def order_of_pixel(self, prev_output, curr_output, prev_order_gt, now_order, threshold=0.49):
+    #     # Use threshold to generate the order of click of pixel ground truth.
+    #     # The pixel order should be in [0, 1, 2, 3, ...].
+    #     # There is a change in the pixel value crossing the threshold.
+    #     # If the curr_output < 0.49 but prev_output >= 0.49, we define the pixel as belonging to the now_order click.
+    #     # If prev_output < 0.49 and curr_output also < 0.49, we don't modify the value.
+    #     # If prev_output > 0.49 and curr_output > 0.49, we don't modify the value.
+    #     # If prev_output < 0.49 and curr_output > 0.49, we modify the value.
+    #     # only compare to the threshold
+    #     # Get the device of the outputs
+    #     device = prev_output.device
+
+    #     # Create the masks for the conditions
+    #     prev_mask = (prev_output >= threshold)
+    #     curr_mask = (curr_output < threshold)
+    
+    #     # Initialize the ground truth for pixel order
+    #     order_gt_ = prev_order_gt.clone()
+    
+    #     # Update the order ground truth map using vectorized operations
+    #     updated_pixels = (curr_mask & prev_mask) | (~curr_mask & ~prev_mask)
+    #     order_gt_[updated_pixels] = now_order
+    
+    #     return order_gt_.to(device)
+    def order_of_pixel(self, prev_output, curr_output, prev_order_gt, now_order, threshold=0.5):
         # Get the device of the outputs
         device = prev_output.device
 
-        # Create the masks for the conditions
-        prev_mask = (prev_output >= threshold)
-        curr_mask = (curr_output < threshold)
-    
-        # Initialize the ground truth for pixel order
+        # Create binary masks for the conditions.
+        # These masks are True for each pixel where the condition is met and False where it is not.
+
+        # Mask for pixels where previous output is greater or equal to the threshold
+        prev_above_threshold = (prev_output >= threshold)
+        
+        # Mask for pixels where current output is less than the threshold
+        curr_below_threshold = (curr_output < threshold)
+        
+        # Mask for pixels where previous output is less than the threshold
+        prev_below_threshold = (prev_output < threshold)
+        
+        # Mask for pixels where current output is greater or equal to the threshold
+        curr_above_threshold = (curr_output >= threshold)
+
+         # Initialize the ground truth for pixel order with a clone of previous order ground truth
         order_gt_ = prev_order_gt.clone()
-    
-        # Update the order ground truth map using vectorized operations
-        updated_pixels = (curr_mask & prev_mask) | (~curr_mask & ~prev_mask)
-        order_gt_[updated_pixels] = now_order
-    
+
+        # # Condition 1: 
+        # # If the current output is less than the threshold but previous output is greater or equal to the threshold, 
+        # # we define the pixel as belonging to the 0
+        # decrease_across_threshold = prev_above_threshold & curr_below_threshold
+        # order_gt_[decrease_across_threshold] = 0
+        # Condition 1: 
+        # If the current output is less than the threshold but previous output is greater or equal to the threshold, 
+        # we define the pixel as belonging to the 0
+        decrease_across_threshold = prev_above_threshold & curr_below_threshold
+        order_gt_[decrease_across_threshold] = now_order
+
+
+        # Condition 4:
+        # If previous output is less than the threshold and current output is greater or equal to the threshold, 
+        # we modify the value to now_order.
+        increase_across_threshold = prev_below_threshold & curr_above_threshold
+        order_gt_[increase_across_threshold] = now_order
+
+        # Note: For condition 2 and 3 where either both previous and current outputs are less than the threshold
+        # or both are greater or equal to the threshold, we do not make any modifications.
+
         return order_gt_.to(device)
+
 
     def order_encoding_of_pixel(self, order_gt, max_order=49, embed_dim=1):
         # Compute the position encoding
@@ -582,6 +702,48 @@ class ISTrainer(object):
         decoded_order = min_indices.view(encoded_order_size)
 
         return decoded_order
+
+    def decode_order_similarity_batch(self, encoded_order, max_order=20, embed_dim=1):
+        encoded_order_size = encoded_order.size()
+
+        # Compute the position encoding
+        position = torch.arange(0, max_order, dtype=torch.float32).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, embed_dim, 2, dtype=torch.float32) * -(math.log(10000.0) / embed_dim))
+        pe = torch.zeros((max_order, embed_dim))
+
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+
+        # Reshape the tensors to have the same number of columns
+        pe = position.view(max_order,1,1,1).float().cpu() #pe.view(max_order, 1, 1, 1).float()
+
+        # Apply convolution to position encoding
+        decoded_pe_embedding = self.net.get_order_embedding(pe.to(self.device))
+
+        decode_order_list = []
+        
+        for i in range(encoded_order.size(0)):
+            # Compute the dot product between the tensors x1 and x2
+            dot_product = torch.einsum('nchw,mchw->nmhw', decoded_pe_embedding, encoded_order[i:i+1])
+
+            # Compute the magnitudes of the tensors x1 and x2
+            x1_magnitude = torch.sqrt(torch.sum(decoded_pe_embedding ** 2, dim=1, keepdim=True))
+            x2_magnitude = torch.sqrt(torch.sum(encoded_order[i:i+1] ** 2, dim=1, keepdim=True))
+
+            # Compute the cosine similarity
+            similarities = dot_product / torch.clamp(x1_magnitude * x2_magnitude, min=1e-8)
+            
+            # Find the index of the maximum similarity for each encoded pixel
+            _, max_indices = torch.max(similarities, dim=0)
+
+            # Reshape the indices to match the shape of the input tensor
+            decoded_order = max_indices.view(encoded_order_size[2:]).unsqueeze(0).unsqueeze(1)
+
+            decode_order_list.append(decoded_order)
+        decoded_order = torch.cat(decode_order_list, dim=0)
+
+        return decoded_order
+
     def decode_order_similarity(self, encoded_order, max_order=49, embed_dim=1):
         encoded_order_size = encoded_order.size()
 
@@ -624,8 +786,6 @@ class ISTrainer(object):
         decoded_order = max_indices.view(encoded_order_size[2:])
 
         return decoded_order.unsqueeze(0)
-
-
 
 
     def find_next_n_points(self, image, gt_mask, points, prev_output,
@@ -690,7 +850,7 @@ class ISTrainer(object):
 
         return total_loss
 
-    def save_visualization(self, splitted_batch_data, outputs, global_step, prefix):
+    def save_visualization(self, splitted_batch_data, outputs, global_step, prefix, from_logist=False):
         output_images_path = self.cfg.VIS_PATH / prefix
         if self.task_prefix:
             output_images_path /= self.task_prefix
@@ -711,7 +871,10 @@ class ISTrainer(object):
 
 
         gt_instance_masks = instance_masks.cpu().numpy()
-        predicted_instance_masks = torch.sigmoid(outputs['instances']).detach().cpu().numpy()
+        if from_logist:
+            predicted_instance_masks = torch.sigmoid(outputs['instances']).detach().cpu().numpy()
+        else:
+            predicted_instance_masks = outputs['instances'].detach().cpu().numpy()
         points = points.detach().cpu().numpy()
 
 
@@ -774,7 +937,7 @@ class ISTrainer(object):
         return self.cfg.local_rank == 0
 
 
-def get_next_points(pred, gt, points, pred_thresh=0.49):
+def get_next_points(pred, gt, points, pred_thresh=0.50):
     pred = pred.detach().cpu().numpy()[:, 0, :, :]
     gt = gt.cpu().numpy()[:, 0, :, :] > 0.49
 
@@ -816,7 +979,7 @@ def get_next_points(pred, gt, points, pred_thresh=0.49):
     return points
 
 
-def get_iou(pred, gt, pred_thresh=0.49):
+def get_iou(pred, gt, pred_thresh=0.50):
     pred_mask = pred > pred_thresh
     gt_mask = gt > 0.49
 
